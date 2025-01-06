@@ -415,7 +415,7 @@ class Frame:
 
         self.index, = read_struct(file, '<I')
         for i in range(3):
-            msg = read_fixed_string(file).decode('euc_kr')
+            msg = read_fixed_string(file).decode('cp949')
             self.messages.append(msg)
 
         if total < 2 and self.messages[0] == '':
