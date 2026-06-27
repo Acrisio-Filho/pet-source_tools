@@ -1,3 +1,6 @@
+# Copyright 2016 John Chadwick <john@jchw.io>
+# Copyright 2023-2026 Acrisio Filho
+
 # ioutil.py - Just some simple utilities for reading/writing C-style data.
 # Every project has to have it's own little utility functions. It sucks but
 # it's better than repeating yourself ad nauseum.
@@ -35,7 +38,7 @@ def read_cstr(file):
 
 # write_cstr writes a C-style string
 def write_cstr(file, buf):
-    file.write(buf + '\x00')
+    file.write(buf + b'\x00')
 
 
 def read_fixed_string(file):
@@ -53,3 +56,69 @@ def write_fixed_string(file, buff):
 
     if length > 0:
         file.write(buff)
+
+def read_bone_id(file):
+    bone_id, = read_struct(file, '<B')
+
+    if bone_id == 0xFF:
+        return -1
+
+    if bone_id == 0xFE:
+        bone_id, = read_struct(file, '<h')
+
+    if bone_id == 0xFFFF:
+        return -1
+    
+    return bone_id
+
+def write_bone_id(file, bone_id):
+    if bone_id > 0xFD:
+        write_struct(file, '<Bh', 0xFE, bone_id)
+    else:
+        write_struct(file, '<B', bone_id & 0xFF)
+
+def bytesFromCP949ToUnicode(bytes, replace="Invalid bytes"):
+    try:
+        return bytes.decode('cp949')
+    except UnicodeDecodeError as e:
+        print("[", bytes, "]", e)
+        return replace
+
+def unicodeTobytesCP949(unicode):
+    try:
+        return unicode.encode('cp949')
+    except UnicodeEncodeError as e:
+        print("[" + unicode + "]", e)
+
+class AABB:
+    def __init__(self, minx=None, miny=None, minz=None, maxx=None, maxy=None, maxz=None):
+        self.minx = minx
+        self.miny = miny
+        self.minz = minz
+        self.maxx = maxx
+        self.maxy = maxy
+        self.maxz = maxz
+
+    def load(self, file):
+        self.minx, self.miny, self.minz = read_struct(file, "<3f")
+        self.maxx, self.maxy, self.maxz = read_struct(file, "<3f")
+
+    def save(self, file):
+        write_struct(file, "<3f", self.minx, self.miny, self.minz)
+        write_struct(file, "<3f", self.maxx, self.maxy, self.maxz)
+
+    def tolist(self):
+        return [
+            self.minx, self.miny, self.minz,
+            self.maxx, self.maxy, self.maxz
+        ]
+
+    def copy(self):
+        return AABB(*self.tolist())
+
+    def __repr__(self):
+        return "AABB(minx=%f, miny=%f, minz=%f, maxx=%f, maxy=%f, maxz=%f)" % (
+            self.minx, self.miny, self.minz,
+            self.maxx, self.maxy, self.maxz
+        )
+        return unicode.encode('cp949', errors='backslashreplace')

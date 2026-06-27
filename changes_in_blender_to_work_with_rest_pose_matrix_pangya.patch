@@ -1,0 +1,468 @@
+From 7d8770359fcdb0b99856a203bc828ed3576e5830 Mon Sep 17 00:00:00 2001
+From: Acrisio-Filho <>
+Date: Wed, 21 Jan 2026 20:30:49 -0300
+Subject: [PATCH 1/2] =?UTF-8?q?Modifica=C3=A7=C3=B5es=20para=20funcionar?=
+ =?UTF-8?q?=20com=20os=20modelos=20do=20pangya=20na=20matrix=20rest=20pose?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ scripts/startup/bl_ui/properties_data_bone.py      |  3 +++
+ source/blender/blenkernel/BKE_armature.hh          |  2 ++
+ source/blender/blenkernel/intern/armature.cc       | 31 ++++++++++++++++++++++
+ .../draw/engines/overlay/overlay_armature.cc       |  5 +++-
+ source/blender/editors/armature/armature_edit.cc   |  3 +++
+ source/blender/editors/armature/armature_utils.cc  | 25 +++++++++++++++++
+ .../blender/editors/space_view3d/view3d_buttons.cc |  2 ++
+ source/blender/makesdna/DNA_armature_types.h       |  7 +++++
+ source/blender/makesrna/intern/rna_armature.cc     | 25 +++++++++++++++++
+ 9 files changed, 102 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/startup/bl_ui/properties_data_bone.py b/scripts/startup/bl_ui/properties_data_bone.py
+index f969a1a4180..42efa94243b 100644
+--- a/scripts/startup/bl_ui/properties_data_bone.py
++++ b/scripts/startup/bl_ui/properties_data_bone.py
+@@ -109,6 +109,9 @@ class BONE_PT_transform(BoneButtonsPanel, Panel):
+             col.prop(bone, "length")
+             col.prop(bone, "lock")
+ 
++            col = layout.column()
++            col.prop(bone, "scale")
++
+ 
+ class BONE_PT_curved(BoneButtonsPanel, Panel):
+     bl_label = "Bendy Bones"
+diff --git a/source/blender/blenkernel/BKE_armature.hh b/source/blender/blenkernel/BKE_armature.hh
+index e4ec943e048..7362aff0e1b 100644
+--- a/source/blender/blenkernel/BKE_armature.hh
++++ b/source/blender/blenkernel/BKE_armature.hh
+@@ -61,6 +61,8 @@ struct EditBone {
+   /** Orientation and length is implicit during editing */
+   float head[3] = {};
+   float tail[3] = {};
++  // !@ pangya
++  float scale[3] = {1.0f, 1.0f, 1.0f};
+   /**
+    * All joints are considered to have zero rotation with respect to
+    * their parents. Therefore any rotations specified during the
+diff --git a/source/blender/blenkernel/intern/armature.cc b/source/blender/blenkernel/intern/armature.cc
+index f29cbd00b5a..cf8c3ccb9b6 100644
+--- a/source/blender/blenkernel/intern/armature.cc
++++ b/source/blender/blenkernel/intern/armature.cc
+@@ -659,11 +659,13 @@ static void copy_bone_transform(Bone *bone_dst, const Bone *bone_src)
+ 
+   copy_v3_v3(bone_dst->head, bone_src->head);
+   copy_v3_v3(bone_dst->tail, bone_src->tail);
++  copy_v3_v3(bone_dst->scale, bone_src->scale); // !@ pangya
+ 
+   copy_m3_m3(bone_dst->bone_mat, bone_src->bone_mat);
+ 
+   copy_v3_v3(bone_dst->arm_head, bone_src->arm_head);
+   copy_v3_v3(bone_dst->arm_tail, bone_src->arm_tail);
++  copy_v3_v3(bone_dst->arm_scale, bone_src->arm_scale); // !@ pangya
+ 
+   copy_m4_m4(bone_dst->arm_mat, bone_src->arm_mat);
+ 
+@@ -722,6 +724,12 @@ static void armature_transform_recurse(ListBaseT<Bone> *bonebase,
+ 
+     mul_m4_v3(mat, bone.arm_head);
+     mul_m4_v3(mat, bone.arm_tail);
++    
++    {
++      float mat4[4][4];
++      mul_m4_m4m4(mat4, bone.arm_mat, mat);
++      mat4_to_size(bone.arm_scale, mat4);
++    }
+ 
+     /* Get the new head and tail */
+     if (bone_parent) {
+@@ -730,10 +738,28 @@ static void armature_transform_recurse(ListBaseT<Bone> *bonebase,
+ 
+       mul_mat3_m4_v3(arm_mat_parent_inv, bone.head);
+       mul_mat3_m4_v3(arm_mat_parent_inv, bone.tail);
++
++      {
++        float vec[3];
++        float mat3_1[3][3];
++        float mat3_2[3][3];
++
++        sub_v3_v3v3(vec, bone.arm_tail, bone.arm_head);
++        vec_roll_to_mat3(vec, bone.arm_roll, mat3_1);
++
++        size_to_mat3(mat3_2, bone.arm_scale);
++        mul_m3_m3m3(mat3_1, mat3, mat3_2);
++
++        copy_m3_m4(mat3_2, arm_mat_parent_inv);
++        mul_m3_m3m3(mat3_1, mat3_2, mat3);
++
++        mat3_to_size(bone.scale, mat3_1);
++      }
+     }
+     else {
+       copy_v3_v3(bone.head, bone.arm_head);
+       copy_v3_v3(bone.tail, bone.arm_tail);
++      copy_v3_v3(bone.scale, bone.arm_scale);
+     }
+ 
+     /* Now the head/tail have been updated, set the roll back, matching 'roll_mat3_pre'. */
+@@ -2741,6 +2767,11 @@ void BKE_armature_where_is_bone(Bone *bone, const Bone *bone_parent, const bool
+   bone->length = len_v3(vec);
+   vec_roll_to_mat3(vec, bone->roll, bone->bone_mat);
+ 
++  // !@ Pangya
++  float mat3[3][3];
++  size_to_mat3(mat3, bone->scale);
++  mul_m3_m3m3(bone->bone_mat, bone->bone_mat, mat3);
++
+   /* this is called on old file reading too... */
+   if (bone->xwidth == 0.0f) {
+     bone->xwidth = 0.1f;
+diff --git a/source/blender/draw/engines/overlay/overlay_armature.cc b/source/blender/draw/engines/overlay/overlay_armature.cc
+index 0b527e823db..a458821a38d 100644
+--- a/source/blender/draw/engines/overlay/overlay_armature.cc
++++ b/source/blender/draw/engines/overlay/overlay_armature.cc
+@@ -977,10 +977,11 @@ static void draw_bone_update_disp_matrix_default(UnifiedBonePtr bone)
+ 
+     copy_v3_fl(bone_scale, eBone->length);
+     bone_mat = ebmat;
++    // !@ pangya
++    copy_v3_v3(bone_scale, eBone->scale);
+   }
+ 
+   copy_m4_m4(disp_mat, bone_mat);
+-  rescale_m4(disp_mat, bone_scale);
+   copy_m4_m4(disp_tail_mat, disp_mat);
+   translate_m4(disp_tail_mat, 0.0f, 1.0f, 0.0f);
+ }
+@@ -1000,6 +1001,8 @@ static void draw_bone_update_disp_matrix_custom_shape(UnifiedBonePtr bone)
+    * and not be tied to the draw pass creation.
+    * This would refresh armature without invalidating the draw cache. */
+   mul_v3_v3fl(bone_scale, pchan->custom_scale_xyz, PCHAN_CUSTOM_BONE_LENGTH(pchan));
++  // !@ pangya
++  mul_v3_v3v3(bone_scale, pchan->custom_scale_xyz, pchan->bone->scale);
+   bone_mat = pchan->custom_tx ? pchan->custom_tx->pose_mat : pchan->pose_mat;
+   disp_mat = bone.disp_mat();
+   disp_tail_mat = pchan->disp_tail_mat;
+diff --git a/source/blender/editors/armature/armature_edit.cc b/source/blender/editors/armature/armature_edit.cc
+index a99572cae3d..6a7eccdc9fa 100644
+--- a/source/blender/editors/armature/armature_edit.cc
++++ b/source/blender/editors/armature/armature_edit.cc
+@@ -98,6 +98,9 @@ void ED_armature_edit_transform(bArmature *arm, const float mat[4][4], const boo
+     /* apply the transformed roll back */
+     mat3_to_vec_roll(tmat, nullptr, &ebone.roll);
+ 
++    // !@ Pangya
++    mat3_to_size(ebone.scale, tmat);
++
+     if (do_props) {
+       ebone.rad_head *= scale;
+       ebone.rad_tail *= scale;
+diff --git a/source/blender/editors/armature/armature_utils.cc b/source/blender/editors/armature/armature_utils.cc
+index c1a960778c2..11fb8f33dc0 100644
+--- a/source/blender/editors/armature/armature_utils.cc
++++ b/source/blender/editors/armature/armature_utils.cc
+@@ -210,6 +210,10 @@ void ED_armature_ebone_to_mat3(EditBone *ebone, float r_mat[3][3])
+   }
+ 
+   vec_roll_to_mat3_normalized(delta, roll, r_mat);
++  // !@ Pangya
++  float mat3[3][3];
++  size_to_mat3(mat3, ebone->scale);
++  mul_m3_m3m3(r_mat, r_mat, mat3);
+ }
+ 
+ void ED_armature_ebone_to_mat4(EditBone *ebone, float r_mat[4][4])
+@@ -231,6 +235,7 @@ void ED_armature_ebone_from_mat3(EditBone *ebone, const float mat[3][3])
+ 
+   madd_v3_v3v3fl(ebone->tail, ebone->head, vec, len);
+   ebone->roll = roll;
++  mat3_to_size(ebone->scale, mat);
+ }
+ 
+ void ED_armature_ebone_from_mat4(EditBone *ebone, const float mat[4][4])
+@@ -488,6 +493,7 @@ static EditBone *make_boneList_recursive(ListBaseT<EditBone> *edbo,
+ 
+     copy_v3_v3(eBone->head, curBone.arm_head);
+     copy_v3_v3(eBone->tail, curBone.arm_tail);
++    copy_v3_v3(eBone->scale, curBone.arm_scale);
+     eBone->roll = curBone.arm_roll;
+ 
+     /* rest of stuff copy */
+@@ -610,10 +616,28 @@ static void armature_finalize_restpose(ListBaseT<Bone> *bonelist,
+ 
+       mul_mat3_m4_v3(parmat_inv, curBone.head);
+       mul_mat3_m4_v3(parmat_inv, curBone.tail);
++
++      {
++        float vec[3];
++        float mat3[3][3];
++        float mat3_2[3][3];
++
++        sub_v3_v3v3(vec, curBone.arm_tail, curBone.arm_head);
++        vec_roll_to_mat3(vec, curBone.arm_roll, mat3);
++
++        size_to_mat3(mat3_2, curBone.arm_scale);
++        mul_m3_m3m3(mat3, mat3, mat3_2);
++
++        copy_m3_m4(mat3_2, parmat_inv);
++        mul_m3_m3m3(mat3, mat3_2, mat3);
++
++        mat3_to_size(curBone.scale, mat3);
++      }
+     }
+     else {
+       copy_v3_v3(curBone.head, curBone.arm_head);
+       copy_v3_v3(curBone.tail, curBone.arm_tail);
++      copy_v3_v3(curBone.scale, curBone.arm_scale);
+     }
+ 
+     /* Set local matrix and arm_mat (rest-pose).
+@@ -735,6 +759,7 @@ void ED_armature_from_edit(Main *bmain, bArmature *arm)
+     STRNCPY_UTF8(newBone->name, eBone.name);
+     copy_v3_v3(newBone->arm_head, eBone.head);
+     copy_v3_v3(newBone->arm_tail, eBone.tail);
++    copy_v3_v3(newBone->arm_scale, eBone.scale);
+     newBone->arm_roll = eBone.roll;
+ 
+     newBone->flag = eBone.flag;
+diff --git a/source/blender/editors/space_view3d/view3d_buttons.cc b/source/blender/editors/space_view3d/view3d_buttons.cc
+index d742328e6a7..714c433f71b 100644
+--- a/source/blender/editors/space_view3d/view3d_buttons.cc
++++ b/source/blender/editors/space_view3d/view3d_buttons.cc
+@@ -2016,6 +2016,8 @@ static void v3d_editarmature_buts(ui::Layout &layout, Object *ob)
+   col.prop(&eboneptr, "tail", UI_ITEM_NONE, std::nullopt, ICON_NONE);
+   col.prop(&eboneptr, "tail_radius", UI_ITEM_NONE, IFACE_("Radius"), ICON_NONE);
+ 
++  col.prop(&eboneptr, "scale", UI_ITEM_NONE, std::nullopt, ICON_NONE);
++
+   col.prop(&eboneptr, "roll", UI_ITEM_NONE, std::nullopt, ICON_NONE);
+   col.prop(&eboneptr, "length", UI_ITEM_NONE, std::nullopt, ICON_NONE);
+   col.prop(&eboneptr, "envelope_distance", UI_ITEM_NONE, IFACE_("Envelope"), ICON_NONE);
+diff --git a/source/blender/makesdna/DNA_armature_types.h b/source/blender/makesdna/DNA_armature_types.h
+index d708c2bc970..ae7b83f5002 100644
+--- a/source/blender/makesdna/DNA_armature_types.h
++++ b/source/blender/makesdna/DNA_armature_types.h
+@@ -321,6 +321,10 @@ struct Bone {
+    * bone.matrix in RNA. Computed in BKE_armature_where_is_bone(). */
+   float bone_mat[3][3] = {};
+ 
++  // !@ pangya
++  int unknwon = 0;
++  float scale[3] = {1.0f, 1.0f, 1.0f};
++
+   int flag = 0;
+   int8_t drawtype = ARM_DRAW_TYPE_ARMATURE_DEFINED; /* eArmature_Drawtype */
+   char _pad1[3] = {};
+@@ -333,6 +337,9 @@ struct Bone {
+   float arm_head[3] = {};
+   /** Tail position in armature space. So should be the same as tail in edit mode. */
+   float arm_tail[3] = {};
++  // !@ pangya
++  int unknown2 = 0;
++  float arm_scale[3] = {1.0f, 1.0f, 1.0f};
+   /** Matrix: `(bone_mat(b)+head(b))*arm_mat(b-1)`, rest pose in armature space. */
+   float arm_mat[4][4] = {};
+   /** Roll in Armature Space (rest pose). */
+diff --git a/source/blender/makesrna/intern/rna_armature.cc b/source/blender/makesrna/intern/rna_armature.cc
+index 451c38ac801..f468a688896 100644
+--- a/source/blender/makesrna/intern/rna_armature.cc
++++ b/source/blender/makesrna/intern/rna_armature.cc
+@@ -1803,6 +1803,22 @@ static void rna_def_bone(BlenderRNA *brna)
+       prop, "Armature-Relative Head", "Location of head end of the bone relative to armature");
+   RNA_def_property_ui_range(prop, -FLT_MAX, FLT_MAX, 1, RNA_TRANSLATION_PREC_DEFAULT);
+ 
++  // !@ New value to accept scale to pangya
++  prop = RNA_def_property(srna, "scale", PROP_FLOAT, PROP_XYZ);
++  RNA_def_property_float_sdna(prop, nullptr, "scale");
++  RNA_def_property_array(prop, 3);
++  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
++  RNA_def_property_ui_text(prop, "Scale", "Scale of bone relative to its parent");
++  RNA_def_property_ui_range(prop, -FLT_MAX, FLT_MAX, 1, RNA_TRANSLATION_PREC_DEFAULT);
++
++  // !@ New value to accept scale to pangya
++  prop = RNA_def_property(srna, "scale_local", PROP_FLOAT, PROP_XYZ);
++  RNA_def_property_float_sdna(prop, nullptr, "arm_scale");
++  RNA_def_property_array(prop, 3);
++  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
++  RNA_def_property_ui_text(prop, "Scale", "Scale of bone relative to armature");
++  RNA_def_property_ui_range(prop, -FLT_MAX, FLT_MAX, 1, RNA_TRANSLATION_PREC_DEFAULT);
++
+   prop = RNA_def_property(srna, "length", PROP_FLOAT, PROP_DISTANCE);
+   RNA_def_property_float_sdna(prop, nullptr, "length");
+   RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+@@ -1874,6 +1890,15 @@ static void rna_def_edit_bone(BlenderRNA *brna)
+   RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+   RNA_def_property_update(prop, 0, "rna_Armature_editbone_transform_update");
+ 
++  // !@ New value to accept scale to pangya
++  prop = RNA_def_property(srna, "scale", PROP_FLOAT, PROP_XYZ);
++  RNA_def_property_float_sdna(prop, nullptr, "scale");
++  RNA_def_property_ui_range(prop, -FLT_MAX, FLT_MAX, 10, RNA_TRANSLATION_PREC_DEFAULT);
++  RNA_def_property_array(prop, 3);
++  RNA_def_property_ui_text(prop, "Scale", "Scale of bone");
++  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
++  RNA_def_property_update(prop, 0, "rna_Armature_editbone_transform_update");
++
+   prop = RNA_def_property(srna, "length", PROP_FLOAT, PROP_DISTANCE);
+   RNA_def_property_float_funcs(
+       prop, "rna_EditBone_length_get", "rna_EditBone_length_set", nullptr);
+-- 
+2.16.0.windows.2
+
+
+From e1dac4b6331ef18a663d1a14a24389e2dcd1762c Mon Sep 17 00:00:00 2001
+From: Acrisio-Filho <>
+Date: Sat, 28 Feb 2026 06:39:53 -0300
+Subject: [PATCH 2/2] =?UTF-8?q?Ajeitei=20o=20erro=20de=20digita=C3=A7?=
+ =?UTF-8?q?=C3=A3o=20que=20deixei=20o=20mat3,=20mas=20era=20para=20ser=20m?=
+ =?UTF-8?q?at3=5F1,=20e=20o=20mais=20importante=20ajeitei=20o=20scale=20ne?=
+ =?UTF-8?q?gativo,=20eu=20n=C3=A3o=20estava=20verificando=20se=20era=20neg?=
+ =?UTF-8?q?ativo=20para=20deixa=20a=20escala=20negativa.?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ source/blender/blenkernel/intern/armature.cc      | 12 +++++++++---
+ source/blender/editors/armature/armature_edit.cc  |  2 ++
+ source/blender/editors/armature/armature_utils.cc | 24 ++++++++++++++++++-----
+ 3 files changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/source/blender/blenkernel/intern/armature.cc b/source/blender/blenkernel/intern/armature.cc
+index cf8c3ccb9b6..878a1f031e2 100644
+--- a/source/blender/blenkernel/intern/armature.cc
++++ b/source/blender/blenkernel/intern/armature.cc
+@@ -725,10 +725,13 @@ static void armature_transform_recurse(ListBaseT<Bone> *bonebase,
+     mul_m4_v3(mat, bone.arm_head);
+     mul_m4_v3(mat, bone.arm_tail);
+     
++    // !@ pangya
+     {
+       float mat4[4][4];
+       mul_m4_m4m4(mat4, bone.arm_mat, mat);
+       mat4_to_size(bone.arm_scale, mat4);
++      if (UNLIKELY(is_negative_m4(mat4)))
++        negate_v3(bone.arm_scale);
+     }
+ 
+     /* Get the new head and tail */
+@@ -739,6 +742,7 @@ static void armature_transform_recurse(ListBaseT<Bone> *bonebase,
+       mul_mat3_m4_v3(arm_mat_parent_inv, bone.head);
+       mul_mat3_m4_v3(arm_mat_parent_inv, bone.tail);
+ 
++      // !@ pangya
+       {
+         float vec[3];
+         float mat3_1[3][3];
+@@ -748,18 +752,20 @@ static void armature_transform_recurse(ListBaseT<Bone> *bonebase,
+         vec_roll_to_mat3(vec, bone.arm_roll, mat3_1);
+ 
+         size_to_mat3(mat3_2, bone.arm_scale);
+-        mul_m3_m3m3(mat3_1, mat3, mat3_2);
++        mul_m3_m3m3(mat3_1, mat3_1, mat3_2);
+ 
+         copy_m3_m4(mat3_2, arm_mat_parent_inv);
+-        mul_m3_m3m3(mat3_1, mat3_2, mat3);
++        mul_m3_m3m3(mat3_1, mat3_2, mat3_1);
+ 
+         mat3_to_size(bone.scale, mat3_1);
++        if (UNLIKELY(is_negative_m3(mat3_1)))
++          negate_v3(bone.scale);
+       }
+     }
+     else {
+       copy_v3_v3(bone.head, bone.arm_head);
+       copy_v3_v3(bone.tail, bone.arm_tail);
+-      copy_v3_v3(bone.scale, bone.arm_scale);
++      copy_v3_v3(bone.scale, bone.arm_scale); // !@ pangya
+     }
+ 
+     /* Now the head/tail have been updated, set the roll back, matching 'roll_mat3_pre'. */
+diff --git a/source/blender/editors/armature/armature_edit.cc b/source/blender/editors/armature/armature_edit.cc
+index 6a7eccdc9fa..a809f0cf477 100644
+--- a/source/blender/editors/armature/armature_edit.cc
++++ b/source/blender/editors/armature/armature_edit.cc
+@@ -100,6 +100,8 @@ void ED_armature_edit_transform(bArmature *arm, const float mat[4][4], const boo
+ 
+     // !@ Pangya
+     mat3_to_size(ebone.scale, tmat);
++    if (UNLIKELY(is_negative_m3(tmat)))
++      negate_v3(ebone.scale);
+ 
+     if (do_props) {
+       ebone.rad_head *= scale;
+diff --git a/source/blender/editors/armature/armature_utils.cc b/source/blender/editors/armature/armature_utils.cc
+index 11fb8f33dc0..ace920b6101 100644
+--- a/source/blender/editors/armature/armature_utils.cc
++++ b/source/blender/editors/armature/armature_utils.cc
+@@ -231,11 +231,22 @@ void ED_armature_ebone_from_mat3(EditBone *ebone, const float mat[3][3])
+   float vec[3], roll;
+   const float len = len_v3v3(ebone->head, ebone->tail);
+ 
+-  mat3_to_vec_roll(mat, vec, &roll);
++  // !@ pangya
++  {
++    float rot[3][3], m3[3][3];
++    copy_m3_m3(m3, mat);
++    mat3_to_rot_size(rot, ebone->scale, mat);
++    if (UNLIKELY(is_negative_m3(mat))) {
++      negate_v3_v3(vec, ebone->scale);
++      size_to_mat3(m3, vec);
++      mul_m3_m3m3(m3, rot, m3);
++    }
++
++    mat3_to_vec_roll(m3, vec, &roll);
++  }
+ 
+   madd_v3_v3v3fl(ebone->tail, ebone->head, vec, len);
+   ebone->roll = roll;
+-  mat3_to_size(ebone->scale, mat);
+ }
+ 
+ void ED_armature_ebone_from_mat4(EditBone *ebone, const float mat[4][4])
+@@ -493,7 +504,7 @@ static EditBone *make_boneList_recursive(ListBaseT<EditBone> *edbo,
+ 
+     copy_v3_v3(eBone->head, curBone.arm_head);
+     copy_v3_v3(eBone->tail, curBone.arm_tail);
+-    copy_v3_v3(eBone->scale, curBone.arm_scale);
++    copy_v3_v3(eBone->scale, curBone.arm_scale); // !@ pangya
+     eBone->roll = curBone.arm_roll;
+ 
+     /* rest of stuff copy */
+@@ -617,6 +628,7 @@ static void armature_finalize_restpose(ListBaseT<Bone> *bonelist,
+       mul_mat3_m4_v3(parmat_inv, curBone.head);
+       mul_mat3_m4_v3(parmat_inv, curBone.tail);
+ 
++      // !@ pangya
+       {
+         float vec[3];
+         float mat3[3][3];
+@@ -632,12 +644,14 @@ static void armature_finalize_restpose(ListBaseT<Bone> *bonelist,
+         mul_m3_m3m3(mat3, mat3_2, mat3);
+ 
+         mat3_to_size(curBone.scale, mat3);
++        if (UNLIKELY(is_negative_m3(mat3)))
++          negate_v3(curBone.scale);
+       }
+     }
+     else {
+       copy_v3_v3(curBone.head, curBone.arm_head);
+       copy_v3_v3(curBone.tail, curBone.arm_tail);
+-      copy_v3_v3(curBone.scale, curBone.arm_scale);
++      copy_v3_v3(curBone.scale, curBone.arm_scale); // !@ pangya
+     }
+ 
+     /* Set local matrix and arm_mat (rest-pose).
+@@ -759,7 +773,7 @@ void ED_armature_from_edit(Main *bmain, bArmature *arm)
+     STRNCPY_UTF8(newBone->name, eBone.name);
+     copy_v3_v3(newBone->arm_head, eBone.head);
+     copy_v3_v3(newBone->arm_tail, eBone.tail);
+-    copy_v3_v3(newBone->arm_scale, eBone.scale);
++    copy_v3_v3(newBone->arm_scale, eBone.scale); // !@ pangya
+     newBone->arm_roll = eBone.roll;
+ 
+     newBone->flag = eBone.flag;
+-- 
+2.16.0.windows.2
+
